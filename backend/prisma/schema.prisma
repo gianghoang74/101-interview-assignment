@@ -1,0 +1,100 @@
+// SimpleInvoice — Prisma schema
+// Notes:
+//  - Overdue is NEVER stored. The DB enum is {Draft, Pending, Paid}; "Overdue" is
+//    derived at read time (status != Paid AND dueDate < today).
+//  - Money fields are Decimal(14,2) and computed server-side.
+//  - Customer is a separate, normalized table (find-or-create by email on invoice creation).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum InvoiceStatus {
+  Draft
+  Pending
+  Paid
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  fullname     String
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  invoices Invoice[]
+
+  @@map("users")
+}
+
+model Customer {
+  id           String   @id @default(uuid())
+  fullname     String
+  email        String   @unique // find-or-create key on invoice creation
+  mobileNumber String?  @map("mobile_number")
+  address      String?
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  invoices Invoice[]
+
+  // Trigram GIN index: a plain btree can't serve the case-insensitive substring
+  // (ILIKE '%...%') search used for customer-name lookups; pg_trgm can.
+  @@index([fullname(ops: raw("gin_trgm_ops"))], type: Gin, map: "customers_fullname_trgm_idx")
+  @@map("customers")
+}
+
+model Invoice {
+  invoiceId        String        @id @default(uuid()) @map("invoice_id")
+  invoiceNumber    String        @unique @map("invoice_number") // user-provided, DB-enforced uniqueness
+  invoiceReference String?       @map("invoice_reference")
+  invoiceDate      DateTime      @map("invoice_date") @db.Date
+  dueDate          DateTime      @map("due_date") @db.Date
+  currency         String
+  currencySymbol   String        @map("currency_symbol")
+  description      String?
+  status           InvoiceStatus @default(Draft)
+
+  // money — all calculated server-side
+  invoiceSubTotal Decimal @map("invoice_sub_total") @db.Decimal(14, 2)
+  totalTax        Decimal @map("total_tax") @db.Decimal(14, 2)
+  totalDiscount   Decimal @map("total_discount") @db.Decimal(14, 2)
+  totalAmount     Decimal @map("total_amount") @db.Decimal(14, 2)
+  totalPaid       Decimal @default(0) @map("total_paid") @db.Decimal(14, 2)
+  balanceAmount   Decimal @map("balance_amount") @db.Decimal(14, 2)
+
+  customerId String   @map("customer_id")
+  customer   Customer @relation(fields: [customerId], references: [id])
+
+  createdAt DateTime @default(now()) @map("created_at")
+  createdBy String   @map("created_by")
+  creator   User     @relation(fields: [createdBy], references: [id])
+
+  items InvoiceItem[]
+
+  @@index([invoiceDate])
+  @@index([dueDate])
+  @@index([totalAmount])
+  @@index([status])
+  @@index([customerId])
+  // Trigram GIN index: the @unique btree on invoice_number can't serve the
+  // case-insensitive substring (ILIKE '%...%') keyword search; pg_trgm can.
+  @@index([invoiceNumber(ops: raw("gin_trgm_ops"))], type: Gin, map: "invoices_invoice_number_trgm_idx")
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id        String  @id @default(uuid())
+  invoiceId String  @map("invoice_id")
+  invoice   Invoice @relation(fields: [invoiceId], references: [invoiceId], onDelete: Cascade)
+  name      String
+  quantity  Int
+  rate      Decimal @db.Decimal(14, 2)
+
+  @@index([invoiceId])
+  @@map("invoice_items")
+}

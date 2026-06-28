@@ -1,0 +1,66 @@
+# SimpleInvoice — full stack (db + backend + frontend).
+# Bring everything up with:  docker compose up --build
+# Configuration can be overridden via a root .env file (see .env.example).
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: simpleinvoice-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-simpleinvoice}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-simpleinvoice}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: simpleinvoice-backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-simpleinvoice}?schema=public
+      # Required — no hardcoded fallback. Set JWT_SECRET in your .env (copy .env.example).
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set — copy .env.example to .env and set a long random value}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-3600}
+      FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+      PORT: 3001
+    ports:
+      - "${BACKEND_PORT:-3001}:3001"
+    healthcheck:
+      # Use 127.0.0.1 (not localhost): in Alpine, localhost resolves to IPv6 ::1
+      # first, but the app binds IPv4 0.0.0.0 — so localhost would be refused.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/ >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3001}
+    container_name: simpleinvoice-frontend
+    restart: unless-stopped
+    depends_on:
+      # service_started (not service_healthy): the SPA is static files served by
+      # nginx and the browser calls the API directly at runtime, so the frontend
+      # needn't wait for the backend to finish migrating/seeding to come up.
+      backend:
+        condition: service_started
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+
+volumes:
+  db_data:
